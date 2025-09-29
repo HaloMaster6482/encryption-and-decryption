@@ -1172,13 +1172,57 @@ class SecureEncryptionGUI:
             messagebox.showerror("Error", f"Input folder does not exist: {input_folder}")
             return
         
+        # Pre-collect all password-protected files and get passwords upfront
+        password_protected_files = {}
+        
+        try:
+            # Scan for password-protected files first
+            for root, dirs, files in os.walk(input_folder):
+                for file in files:
+                    if file.endswith('.enc'):
+                        input_file_path = os.path.join(root, file)
+                        salt = load_file_salt(input_file_path)
+                        
+                        if salt is not None:  # File is password-protected
+                            relative_path = os.path.relpath(input_file_path, input_folder)
+                            
+                            # Ask for password on main thread
+                            from tkinter import simpledialog
+                            password = simpledialog.askstring(
+                                "Password Required", 
+                                f"Enter password for:\n{relative_path}", 
+                                show='*',
+                                parent=self.root
+                            )
+                            
+                            if password is None:
+                                # User cancelled
+                                result = messagebox.askyesno(
+                                    "Skip File", 
+                                    f"No password provided for {relative_path}.\nSkip this file and continue with others?"
+                                )
+                                if not result:
+                                    return  # User cancelled entire operation
+                                continue  # Skip this file
+                            
+                            password_protected_files[input_file_path] = password
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error scanning files: {str(e)}")
+            return
+        
         def decrypt_folder_thread():
             try:
                 self.update_status("Decrypting folder...", 10)
                 self.log_message("folder", f"Starting folder decryption: {input_folder}")
                 
-                # Use custom folder decryption for GUI
-                success = self.decrypt_folder_gui_safe(input_folder, output_folder, self.key)
+                if password_protected_files:
+                    self.log_message("folder", f"Found {len(password_protected_files)} password-protected files")
+                
+                # Use custom folder decryption with pre-collected passwords
+                success = self.decrypt_folder_with_passwords(
+                    input_folder, output_folder, self.key, password_protected_files
+                )
                 
                 if success:
                     self.update_status("Folder decryption completed", 100)
@@ -1198,8 +1242,8 @@ class SecureEncryptionGUI:
         
         threading.Thread(target=decrypt_folder_thread, daemon=True).start()
     
-    def decrypt_folder_gui_safe(self, input_folder, output_folder, key):
-        """Decrypt folder safely for GUI (handles password prompts on main thread)"""
+    def decrypt_folder_with_passwords(self, input_folder, output_folder, key, password_dict):
+        """Decrypt folder with pre-collected passwords"""
         try:
             if not os.path.exists(input_folder):
                 self.log_message("folder", f"❌ Input folder does not exist: {input_folder}")
@@ -1227,8 +1271,20 @@ class SecureEncryptionGUI:
                         
                         self.log_message("folder", f"Decrypting: {relative_path}")
                         
-                        # Check if file needs password and handle it
-                        success = self.decrypt_file_gui_safe(input_file_path, output_file_path, key)
+                        # Check if this file has password protection
+                        salt = load_file_salt(input_file_path)
+                        
+                        if salt is not None and input_file_path in password_dict:
+                            # Use password-based decryption
+                            password = password_dict[input_file_path]
+                            success = self.decrypt_file_with_password(input_file_path, output_file_path, password, salt)
+                        elif salt is not None:
+                            # Password-protected but no password provided (user skipped)
+                            self.log_message("folder", f"⏭️  Skipped password-protected file: {relative_path}")
+                            continue
+                        else:
+                            # Regular file decryption
+                            success = self.decrypt_file_simple(input_file_path, output_file_path, key)
                         
                         if success:
                             decrypted_count += 1
@@ -1246,65 +1302,18 @@ class SecureEncryptionGUI:
             self.log_message("folder", f"❌ Error during folder decryption: {e}")
             return False
     
-    def decrypt_file_gui_safe(self, input_filename, output_filename, key):
-        """Decrypt a single file safely for GUI use"""
+    def decrypt_file_with_password(self, input_filename, output_filename, password, salt):
+        """Decrypt a single file with known password and salt"""
         try:
-            # Check if this file has password protection (has a salt)
-            salt = load_file_salt(input_filename)
-            
-            if salt is not None:  # File is password-protected
-                # Ask for password on main thread
-                from tkinter import simpledialog
-                password = None
-                
-                def get_password():
-                    nonlocal password
-                    password = simpledialog.askstring(
-                        "Password Required", 
-                        f"Enter password for:\n{os.path.basename(input_filename)}", 
-                        show='*',
-                        parent=self.root
-                    )
-                
-                # Schedule password dialog on main thread
-                self.root.after(0, get_password)
-                
-                # Wait for password input (with timeout to prevent hanging)
-                import time
-                timeout = 30  # 30 seconds timeout
-                elapsed = 0
-                while password is None and elapsed < timeout:
-                    time.sleep(0.1)
-                    elapsed += 0.1
-                    self.root.update()  # Process GUI events
-                
-                if password is None:
-                    self.log_message("folder", f"❌ Password entry cancelled for {os.path.basename(input_filename)}")
-                    return False
-                
-                # Generate the same key using password and salt
-                try:
-                    password_key, _ = generate_key_from_password(password, salt)
-                    fernet = Fernet(password_key)
-                except Exception:
-                    self.log_message("folder", f"❌ Failed to generate key from password for {os.path.basename(input_filename)}")
-                    return False
-            else:
-                # File is not password-protected, use regular key
-                fernet = Fernet(key)
+            # Generate the same key using password and salt
+            password_key, _ = generate_key_from_password(password, salt)
+            fernet = Fernet(password_key)
             
             # Decrypt the file
             with open(input_filename, 'rb') as file:
                 encrypted_data = file.read()
             
-            try:
-                decrypted_data = fernet.decrypt(encrypted_data)
-            except Exception as e:
-                if salt is not None:
-                    self.log_message("folder", f"❌ Incorrect password for {os.path.basename(input_filename)}")
-                else:
-                    self.log_message("folder", f"❌ Decryption failed for {os.path.basename(input_filename)}: {e}")
-                return False
+            decrypted_data = fernet.decrypt(encrypted_data)
             
             with open(output_filename, 'wb') as file:
                 file.write(decrypted_data)
@@ -1312,7 +1321,26 @@ class SecureEncryptionGUI:
             return True
             
         except Exception as e:
-            self.log_message("folder", f"❌ Error decrypting {os.path.basename(input_filename)}: {e}")
+            self.log_message("folder", f"❌ Decryption failed for {os.path.basename(input_filename)}: {e}")
+            return False
+    
+    def decrypt_file_simple(self, input_filename, output_filename, key):
+        """Decrypt a single file without password"""
+        try:
+            fernet = Fernet(key)
+            
+            with open(input_filename, 'rb') as file:
+                encrypted_data = file.read()
+            
+            decrypted_data = fernet.decrypt(encrypted_data)
+            
+            with open(output_filename, 'wb') as file:
+                file.write(decrypted_data)
+            
+            return True
+            
+        except Exception as e:
+            self.log_message("folder", f"❌ Decryption failed for {os.path.basename(input_filename)}: {e}")
             return False
     
     # Message operation methods

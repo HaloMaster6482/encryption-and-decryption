@@ -909,6 +909,10 @@ class SecureEncryptionGUI:
         self.folder_password_var = tk.BooleanVar()
         ttk.Checkbutton(folder_options, text="🔐 Use password protection for each file", 
                        variable=self.folder_password_var).grid(row=0, column=0, sticky=tk.W)
+        # Option to delete source encrypted files after successful decryption
+        self.delete_enc_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(folder_options, text="🗑️ Delete source .enc files after successful decryption", 
+                       variable=self.delete_enc_var).grid(row=0, column=1, sticky=tk.W, padx=(10,0))
         
         # Action buttons
         folder_button_frame = ttk.Frame(folder_frame)
@@ -965,6 +969,9 @@ class SecureEncryptionGUI:
         ttk.Checkbutton(options_section, text="📦 Compress before encrypting", variable=self.app_compress_var).grid(row=0, column=0, sticky=tk.W)
         self.app_password_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_section, text="🔐 Use password protection", variable=self.app_password_var).grid(row=0, column=1, sticky=tk.W, padx=(10,0))
+        # Option to delete source .enc after successful decrypt/unpack
+        self.app_delete_enc_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_section, text="🗑️ Delete source .enc file after successful decrypt/unpack", variable=self.app_delete_enc_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(8,0))
 
         # Action buttons
         app_button_frame = ttk.Frame(app_frame)
@@ -1550,19 +1557,22 @@ class SecureEncryptionGUI:
             messagebox.showerror("Error", f"Error scanning files: {str(e)}")
             return
         
+        # read delete flag before starting background thread
+        delete_after = self.delete_enc_var.get()
+
         def decrypt_folder_thread():
             try:
                 self.update_status("Decrypting folder...", 10)
                 self.log_message("folder", f"Starting folder decryption: {input_folder}")
-                
+
                 if password_protected_files:
                     self.log_message("folder", f"Found {len(password_protected_files)} password-protected files")
-                
+
                 # Use custom folder decryption with pre-collected passwords
                 success = self.decrypt_folder_with_passwords(
-                    input_folder, output_folder, self.key, password_protected_files
+                    input_folder, output_folder, self.key, password_protected_files, delete_source=delete_after
                 )
-                
+
                 if success:
                     self.update_status("Folder decryption completed", 100)
                     self.log_message("folder", f"✅ Folder decrypted successfully: {output_folder}")
@@ -1571,17 +1581,17 @@ class SecureEncryptionGUI:
                     self.update_status("Folder decryption failed", 0)
                     self.log_message("folder", "❌ Folder decryption failed")
                     messagebox.showerror("Error", "Folder decryption failed.")
-                
+
             except Exception as e:
                 self.update_status("Folder decryption error", 0)
                 self.log_message("folder", f"❌ Folder decryption error: {str(e)}")
                 messagebox.showerror("Error", f"Folder decryption error: {str(e)}")
             finally:
                 self.progress['value'] = 0
-        
+
         threading.Thread(target=decrypt_folder_thread, daemon=True).start()
     
-    def decrypt_folder_with_passwords(self, input_folder, output_folder, key, password_dict):
+    def decrypt_folder_with_passwords(self, input_folder, output_folder, key, password_dict, delete_source=False):
         """Decrypt folder with pre-collected passwords"""
         try:
             if not os.path.exists(input_folder):
@@ -1627,6 +1637,13 @@ class SecureEncryptionGUI:
                         
                         if success:
                             decrypted_count += 1
+                            # Optionally delete the source encrypted file after successful decryption
+                            if delete_source:
+                                try:
+                                    os.remove(input_file_path)
+                                    self.log_message("folder", f"🗑️  Deleted source: {relative_path}")
+                                except Exception as e:
+                                    self.log_message("folder", f"⚠️ Failed to delete source {relative_path}: {e}")
                         else:
                             failed_count += 1
                             self.log_message("folder", f"❌ Failed to decrypt: {relative_path}")

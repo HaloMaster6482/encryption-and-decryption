@@ -298,6 +298,29 @@ Copy-Item -Recurse ".\*" -Destination $InstallPath
 
 ### Getting Help
 
+## 🚀 Applications Tab
+
+The Applications tab lets you securely package and encrypt an application folder or single executable.
+
+Steps (GUI):
+1. Launch the GUI: `python secure_encryption.py --gui`
+2. Open the **Applications** tab
+3. Select your application folder or executable
+4. Choose an output filename (recommended `.enc` extension)
+5. Check "Compress before encrypting" to create a ZIP archive before encryption (recommended for folders)
+6. Optionally check "Use password protection" to require a password for decryption
+7. Click **Package & Encrypt App** to create the encrypted package
+
+To decrypt/unpack: select the encrypted package, choose an output folder, and click **Decrypt & Unpack App**. If password-protected, you'll be prompted for the password.
+
+Programmatic helpers are provided in `secure_encryption.py`:
+- `encrypt_application(input_path, output_path, key, compress_before=True, use_password=False, password=None)`
+- `decrypt_application(input_path, output_folder, key, password=None)`
+
+Notes:
+- Encrypted application packages use Fernet for encryption. If password-protected, PBKDF2 with per-file salt is used; salt is saved to `file_salts.json`.
+- Large archives are read into memory during (de)encryption; consider an update to streaming mode for very large packages.
+
 1. **Check documentation** - README.md and this file
 2. **Common issues** - See troubleshooting section
 3. **GitHub Issues** - Report bugs or feature requests

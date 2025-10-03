@@ -485,6 +485,150 @@ def decrypt_folder(input_folder, output_folder, key):
         print(f"Error during folder decryption: {e}")
         return False
 
+
+def compress_directory_to_zip(input_path, output_zip_path):
+    """Compress a directory (or single file) into a ZIP archive."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(output_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            if os.path.isdir(input_path):
+                for root, dirs, files in os.walk(input_path):
+                    for file in files:
+                        fullpath = os.path.join(root, file)
+                        arcname = os.path.relpath(fullpath, start=input_path)
+                        zipf.write(fullpath, arcname)
+            else:
+                # Single file
+                zipf.write(input_path, os.path.basename(input_path))
+
+        return True
+    except Exception as e:
+        print(f"Error compressing {input_path} to {output_zip_path}: {e}")
+        return False
+
+
+def encrypt_application(input_path, output_path, key, compress_before=True, use_password=False, password=None):
+    """Compress (optional) and encrypt an application folder/file into an encrypted package.
+
+    - input_path: folder or file to package
+    - output_path: final encrypted output filename (*.enc recommended)
+    - key: main key (Fernet) used when not using password protection
+    - compress_before: whether to compress the input first to a .zip
+    - use_password: whether to protect package with password-derived key
+    - password: password string to derive key (required if use_password True)
+    """
+    try:
+        work_zip = None
+        # If compress requested, create temporary zip next to output
+        if compress_before:
+            base_out = os.path.splitext(output_path)[0]
+            work_zip = base_out + '.zip'
+            if not compress_directory_to_zip(input_path, work_zip):
+                return False
+            to_encrypt = work_zip
+        else:
+            # If input is folder and compress not requested, we can't encrypt a folder directly.
+            if os.path.isdir(input_path):
+                print("Error: Cannot encrypt a directory without compression enabled.")
+                return False
+            to_encrypt = input_path
+
+        # Use password-derived key if requested
+        if use_password:
+            if not password:
+                print("Error: Password required when use_password=True")
+                return False
+            password_key, salt = generate_key_from_password(password)
+            fernet = Fernet(password_key)
+        else:
+            fernet = Fernet(key)
+
+        # Read file bytes and encrypt
+        with open(to_encrypt, 'rb') as f:
+            data = f.read()
+
+        encrypted = fernet.encrypt(data)
+
+        # Write encrypted output
+        with open(output_path, 'wb') as f:
+            f.write(encrypted)
+
+        # If password used, save salt mapping for output file
+        if use_password:
+            save_file_salt(output_path, salt)
+            save_file_password(output_path, password)
+
+        # Clean up temporary zip if created
+        if work_zip and os.path.exists(work_zip):
+            try:
+                os.remove(work_zip)
+            except Exception:
+                pass
+
+        return True
+    except Exception as e:
+        print(f"Error encrypting application package: {e}")
+        return False
+
+
+def decrypt_application(input_path, output_folder, key, password=None):
+    """Decrypt an application package and unpack it to output_folder.
+
+    - input_path: encrypted .enc package
+    - output_folder: folder to extract contents into
+    - key: main key used when package is not password-protected
+    - password: password string if package was protected
+    """
+    try:
+        if not os.path.exists(input_path):
+            print(f"Error: Encrypted package not found: {input_path}")
+            return False
+
+        # Read encrypted bytes
+        with open(input_path, 'rb') as f:
+            enc_data = f.read()
+
+        # Check for saved salt (password protection)
+        salt = load_file_salt(input_path)
+        if salt:
+            if not password:
+                print("Error: Password required for this package")
+                return False
+            password_key, _ = generate_key_from_password(password, salt=salt)
+            fernet = Fernet(password_key)
+        else:
+            fernet = Fernet(key)
+
+        # Decrypt
+        data = fernet.decrypt(enc_data)
+
+        # Ensure output folder exists
+        os.makedirs(output_folder, exist_ok=True)
+
+        # Write temporary file and unpack if ZIP
+        tmp_file = os.path.join(output_folder, 'decrypted_app_tmp.zip')
+        with open(tmp_file, 'wb') as out_f:
+            out_f.write(data)
+
+        import zipfile
+        if zipfile.is_zipfile(tmp_file):
+            with zipfile.ZipFile(tmp_file, 'r') as zipf:
+                zipf.extractall(output_folder)
+            try:
+                os.remove(tmp_file)
+            except Exception:
+                pass
+        else:
+            # Not a zip: move to output folder with original name
+            dest = os.path.join(output_folder, os.path.basename(input_path).replace('.enc', ''))
+            os.replace(tmp_file, dest)
+
+        return True
+    except Exception as e:
+        print(f"Error decrypting application package: {e}")
+        return False
+
 def display_menu():
     print("\n" + "="*60)
     print("🔐 SECURE ENCRYPTION & DECRYPTION TOOL")
@@ -652,6 +796,7 @@ class SecureEncryptionGUI:
         self.create_file_tab()
         self.create_folder_tab()
         self.create_message_tab()
+        self.create_application_tab()
         self.create_settings_tab()
         
         # Status bar
@@ -786,6 +931,58 @@ class SecureEncryptionGUI:
         self.folder_log.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         folder_frame.rowconfigure(3, weight=1)
+
+    def create_application_tab(self):
+        """Create the application encryption/deployment tab"""
+        app_frame = ttk.Frame(self.notebook, padding="15")
+        self.notebook.add(app_frame, text="🚀 Applications")
+
+        # Configure grid
+        app_frame.columnconfigure(1, weight=1)
+
+        # App selection section
+        app_section = ttk.LabelFrame(app_frame, text="Application Selection", padding="10")
+        app_section.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 15))
+        app_section.columnconfigure(1, weight=1)
+
+        ttk.Label(app_section, text="App Folder / File:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.app_input_var = tk.StringVar()
+        ttk.Entry(app_section, textvariable=self.app_input_var, width=50).grid(
+            row=0, column=1, sticky=(tk.W, tk.E), padx=(10, 5), pady=5)
+        ttk.Button(app_section, text="Browse", command=self.browse_app_input).grid(row=0, column=2, pady=5)
+
+        ttk.Label(app_section, text="Output Package:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.app_output_var = tk.StringVar()
+        ttk.Entry(app_section, textvariable=self.app_output_var, width=50).grid(
+            row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 5), pady=5)
+        ttk.Button(app_section, text="Browse", command=self.browse_app_output).grid(row=1, column=2, pady=5)
+
+        # Options
+        options_section = ttk.LabelFrame(app_frame, text="Options", padding="10")
+        options_section.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 15))
+
+        self.app_compress_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_section, text="📦 Compress before encrypting", variable=self.app_compress_var).grid(row=0, column=0, sticky=tk.W)
+        self.app_password_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_section, text="🔐 Use password protection", variable=self.app_password_var).grid(row=0, column=1, sticky=tk.W, padx=(10,0))
+
+        # Action buttons
+        app_button_frame = ttk.Frame(app_frame)
+        app_button_frame.grid(row=2, column=0, columnspan=3, pady=(0, 15))
+
+        ttk.Button(app_button_frame, text="🔒 Package & Encrypt App", command=self.encrypt_application_gui, style='Action.TButton').grid(row=0, column=0, padx=(0,10))
+        ttk.Button(app_button_frame, text="🔓 Decrypt & Unpack App", command=self.decrypt_application_gui, style='Action.TButton').grid(row=0, column=1, padx=(10,0))
+
+        # Log area
+        app_log_section = ttk.LabelFrame(app_frame, text="Operation Log", padding="10")
+        app_log_section.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+        app_log_section.columnconfigure(0, weight=1)
+        app_log_section.rowconfigure(0, weight=1)
+
+        self.app_log = scrolledtext.ScrolledText(app_log_section, height=8, width=80)
+        self.app_log.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        app_frame.rowconfigure(3, weight=1)
     
     def create_message_tab(self):
         """Create the message encryption/decryption tab"""
@@ -943,6 +1140,148 @@ class SecureEncryptionGUI:
         foldername = filedialog.askdirectory(title="Select output folder location")
         if foldername:
             self.output_folder_var.set(foldername)
+
+    # Application tab helpers
+    def browse_app_input(self):
+        """Browse for application folder or file"""
+        path = filedialog.askopenfilename(title="Select application file")
+        if not path:
+            # allow folder selection as well
+            path = filedialog.askdirectory(title="Or select application folder")
+        if path:
+            self.app_input_var.set(path)
+
+    def browse_app_output(self):
+        """Browse for application output encrypted file"""
+        filename = filedialog.asksaveasfilename(title="Save encrypted application as", defaultextension='.enc', filetypes=[('Encrypted files','*.enc'),('All files','*.*')])
+        if filename:
+            self.app_output_var.set(filename)
+
+    def encrypt_application_gui(self):
+        input_path = self.app_input_var.get().strip()
+        output_path = self.app_output_var.get().strip()
+
+        if not input_path or not output_path:
+            messagebox.showerror("Error", "Please select both application input and output")
+            return
+
+        if not os.path.exists(input_path):
+            messagebox.showerror("Error", f"Input path does not exist: {input_path}")
+            return
+
+        compress_before = self.app_compress_var.get()
+        use_password = self.app_password_var.get()
+        password = None
+        if use_password:
+            # Prompt for password on main thread before starting background work
+            password = get_password_input("Enter password to protect the application package:")
+            if not password:
+                messagebox.showwarning("Cancelled", "Password entry cancelled. Operation aborted.")
+                return
+
+        def app_encrypt_thread():
+            try:
+                self.update_status("Packaging & encrypting application...", 10)
+                self.app_log.insert(tk.END, f"Starting: {input_path}\n")
+                self.app_log.see(tk.END)
+
+                success = encrypt_application(input_path, output_path, self.key, compress_before=compress_before, use_password=use_password, password=password)
+
+                if success:
+                    self.update_status("Application encrypted", 100)
+                    self.app_log.insert(tk.END, f"✅ Encrypted: {output_path}\n")
+                    messagebox.showinfo("Success", f"Application packaged and encrypted:\n{output_path}")
+                else:
+                    self.update_status("Encryption failed", 0)
+                    self.app_log.insert(tk.END, "❌ Encryption failed\n")
+                    messagebox.showerror("Error", "Failed to package and encrypt application.")
+
+            except Exception as e:
+                self.update_status("Encryption error", 0)
+                self.app_log.insert(tk.END, f"❌ Error: {e}\n")
+                messagebox.showerror("Error", f"Encryption error: {e}")
+            finally:
+                self.progress['value'] = 0
+
+        threading.Thread(target=app_encrypt_thread, daemon=True).start()
+
+    def decrypt_application_gui(self):
+        input_path = self.app_input_var.get().strip()
+        # For decrypt/unpack, suggest output folder near input
+        output_folder_suggest = os.path.splitext(input_path)[0] if input_path else ''
+        output_folder = filedialog.askdirectory(title="Select folder to unpack decrypted application", initialdir=output_folder_suggest)
+        if not input_path or not output_folder:
+            messagebox.showerror("Error", "Please select an input encrypted package and an output folder")
+            return
+
+        # If this package was password protected, prompt now
+        salt = load_file_salt(input_path)
+        password = None
+        if salt:
+            password = get_password_input("Enter password to decrypt the application package:")
+            if not password:
+                messagebox.showwarning("Cancelled", "Password entry cancelled. Operation aborted.")
+                return
+
+        def app_decrypt_thread():
+            try:
+                self.update_status("Decrypting application package...", 10)
+                self.app_log.insert(tk.END, f"Starting decrypt: {input_path}\n")
+                self.app_log.see(tk.END)
+
+                # Decrypt into a temporary file then, if compressed, unpack
+                temp_output = os.path.join(output_folder, 'decrypted_app_tmp')
+                # Use decrypt_file logic to decrypt bytes
+                success = False
+                try:
+                    with open(input_path, 'rb') as f:
+                        enc_data = f.read()
+
+                    if salt:
+                        # Use password-derived key
+                        password_key, _ = generate_key_from_password(password, salt=base64.urlsafe_b64decode(salt))
+                        fernet = Fernet(password_key)
+                    else:
+                        fernet = Fernet(self.key)
+
+                    data = fernet.decrypt(enc_data)
+
+                    # Write temporary file
+                    temp_file = temp_output + '.zip' if True else temp_output
+                    with open(temp_file, 'wb') as out_f:
+                        out_f.write(data)
+
+                    # If this is a zip, unpack
+                    import zipfile
+                    if zipfile.is_zipfile(temp_file):
+                        with zipfile.ZipFile(temp_file, 'r') as zipf:
+                            zipf.extractall(output_folder)
+                        try:
+                            os.remove(temp_file)
+                        except Exception:
+                            pass
+                    else:
+                        # Single file: move to output folder
+                        dest = os.path.join(output_folder, os.path.basename(input_path).replace('.enc',''))
+                        os.replace(temp_file, dest)
+
+                    success = True
+
+                except Exception as e:
+                    self.app_log.insert(tk.END, f"❌ Decrypt error: {e}\n")
+
+                if success:
+                    self.update_status("Decryption complete", 100)
+                    self.app_log.insert(tk.END, f"✅ Decrypted and unpacked to: {output_folder}\n")
+                    messagebox.showinfo("Success", f"Application decrypted and unpacked to:\n{output_folder}")
+                else:
+                    self.update_status("Decryption failed", 0)
+                    messagebox.showerror("Error", "Failed to decrypt/unpack application package.")
+
+            finally:
+                self.progress['value'] = 0
+
+        threading.Thread(target=app_decrypt_thread, daemon=True).start()
     
     # File operation methods
     def encrypt_file_gui(self):

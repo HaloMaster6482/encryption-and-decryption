@@ -64,6 +64,24 @@ python secure_encryption.py --gui
 - **💬 Messages** - Encrypt/decrypt text messages
 - **⚙️ Settings** - Key management and protected files viewer
 
+### 🚀 Applications
+
+- **Applications** - Package (optional compression) and encrypt an application folder or single executable. Useful for securely distributing private tools or storing app backups.
+
+Features:
+- Compress before encrypting (ZIP) — recommended for folders
+- Optional password protection (PBKDF2-derived key with per-file salt stored in `file_salts.json`)
+- Decrypt & unpack functionality to restore the original application files
+
+Usage (GUI):
+1. Open the **Applications** tab in the GUI.
+2. Select the application folder or executable.
+3. Choose an output encrypted filename (recommended extension: `.enc`).
+4. Optionally enable "Compress before encrypting" and/or "Use password protection".
+5. Click "Package & Encrypt App".
+
+Usage (programmatic): Use `encrypt_application()` and `decrypt_application()` helpers in `secure_encryption.py`.
+
 ### Key Features
 
 - **File Browser Integration** - Easy file/folder selection
